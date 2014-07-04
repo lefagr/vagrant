@@ -1,0 +1,108 @@
+# Vbox vagrant preparation to run BB product
+# User Instructions of how to setup a Centos Box for Vagrant use
+# Download CentOS-6.5-x86_64-minimal.iso : http://mirror.oxilion.nl/centos/6.5/isos/x86_64/CentOS-6.5-x86_64-minimal.iso
+# VBOX Settings
+#
+# Type Linux / Redhat 64bit
+# RAM 768
+# Disable Audio
+# Set Net adapter to Bridge if shared or to NAT for local test
+# Storage -> Controller -> Size: 8GB Dynamic -> Name: bb01 -> Use Host I/O checked
+
+# CentOS installation options:
+
+# Set the correct TimeZone
+# Partitioning: One partition ext4 (noLVM) mount on / -> No Swap partition -> 8GB 
+# If we need scalability use one Partition 200MB mount on /boot and create LVM (PV/VG/LG) with rest of the space  on / - no SWAP
+# Set root pwd 
+# You you have kernel panic after installation you have to edit the grub by setting enforcing=0 Then after booting update system or setenforcing=permissive
+# Config SELinux
+echo 0 >/selinux/enforce ; setenforce permissive
+# Disable IPTables
+chkconfig iptables off ; chkconfig ip6tables off
+
+# Configure the eth script (/etc/sysconfig/network-scripts/ifcfg-ethx
+sed -i -e s/ONBOOT=no/ONBOOT=yes/g \
+-e s/NM_CONTROLLED=yes/NM_CONTROLLED=no/g \
+-e s/^HWADDR/#HWADDR/g \
+-e s/^UUID/#UUID/g /etc/sysconfig/network-scripts/ifcfg-`ifconfig | \
+grep eth | awk '{ print $1 }'`
+
+# Remove udev file to be re-generated on boot
+shred -uv /etc/udev/rules.d/70-persistent-net.rules
+# Clear out any existing dhcp leases
+shred -uv /var/lib/dhclient/*
+# Configure SSHD to not use DNS on connect
+sed -i s/^#UseDNS\ yes/UseDNS\ no/g /etc/ssh/sshd_config
+
+#Install required packages for VBOX additions
+
+yum install -y gcc make perl kernel-devel-`uname -r` kernel-headers-`uname -r`
+
+# Install VBOX Additions
+#
+# Select Install VBOX Additions from Virtual Box and mount the package under /media/cdrom
+mkdir /media/cdrom ; mount -o ro /dev/cdrom /media/cdrom
+
+# Install VBOX Additions / Extensions
+cd /media/cdrom
+export KERN_DIR="/usr/src/kernels/`uname -r`"
+
+# Add the --nox11 option if you're not running X11
+./VBoxLinuxAdditions.run --nox11
+
+# Verify Installation
+VBoxControl --version
+VBoxService --version
+
+# Setup Vagrant user/group/ssh/sudo
+# Create a group "admins"
+groupadd admins
+
+# Create a user vagrant and add him at admins group (its a nice idea to not use the wheel group
+useradd -m -G admins vagrant
+
+# set vagrant passwd to vagrant (you should use a stronger passwd)
+echo vagrant | passwd vagrant --stdin
+
+# Add the group admins to sudoers
+echo -e "%admins          ALL=(ALL)       NOPASSWD: ALL" >>/etc/sudoers
+
+# Disable the requirement for tty and 
+sed -i 's/requiretty/!requiretty/g' /etc/sudoers
+sed -i 's/visiblepw/!visiblepw/g' /etc/sudoers
+
+# Add a line to keep the SSH_AUTH_SOCK environment variable in sudoers
+echo -e ""Defaults   env_keep += "SSH_AUTH_SOCK"" >> /etc/sudoers
+
+su - vagrant
+echo "export PATH=$PATH:/usr/sbin:/sbin" >> ~/.bashrc && source ~/.bashrc
+
+# Configure vagrant user to have the vagrant ssh public key (generate it from vagrant)
+mkdir -m 0700 /home/vagrant/.ssh
+
+ssh rootuser@vagrantsrv 'cat /root/.ssh/id_rsa.pub' >> /home/vagrant/.ssh/authorized_keys
+chown -R vagrant:vagrant /home/vagrant/.ssh
+chmod 0600 /home/vagrant/.ssh/authorized_keys
+
+# Cleaning up
+su -
+yum clean all
+# remove /etc/resolv.conf entries (Will be re-created on boot)
+> /etc/resolf.conf
+# clear out auto-generated ssh keys
+cd /etc/ssh
+shred -uv *key*
+# Clean out log files
+find /var/log -type f -exec tee {} \; < /dev/null
+
+# Force re-creation of random seed
+cd /var/lib
+shred -uv ./random-seed
+
+#Clean out files in /root
+cd /root
+shred -uv .ssh/*
+shred -uv .lesshst .bash_history ; exit; su -
+shred -uv .bash_history
+
